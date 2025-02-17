@@ -47,6 +47,14 @@ def get_customers(conn):
     customer_ids = [row[0] for row in rows]
     return customer_ids
 
+# Function to load product IDs from the Product table
+def get_products(conn):
+    cursor = conn.cursor()
+    cursor.execute("SELECT product_id FROM Products")
+    rows = cursor.fetchall()
+    product_ids = [row[0] for row in rows]
+    return product_ids
+
 # Function to load warehouse IDs from the Warehouses table
 def get_warehouses(conn):
     cursor = conn.cursor()
@@ -122,18 +130,52 @@ def populate_customers(conn):
     print("1000 Customers inserted successfully.")
     return customer_ids
 
+def populate_products(conn):
+    cursor = conn.cursor()
+    product_ids = []
+    # Create a list of 50 unique product names
+    unique_product_names = [f"Product {i}" for i in range(1, 51)]
+    
+    for name in unique_product_names:
+        category = random.randint(1, 5)        
+        price = round(random.uniform(20, 100), 2)        
+        cursor.execute(
+            "INSERT INTO Products (name, category_id, price) VALUES (%s, %s, %s) RETURNING product_id",
+            (name, category, price)
+        )
+        product_id = cursor.fetchone()[0]
+        product_ids.append(product_id)
+    
+    conn.commit()
+    print("50 Products inserted successfully.")
+    return product_ids
+
+
+def get_order_info(conn): 
+    random_num = random.randint(1, 5)
+    cursor = conn.cursor()
+    cursor.execute("SELECT product_id, price FROM Products ORDER BY RANDOM() LIMIT %s", (random_num,))
+    rows = cursor.fetchall()
+    
+    product_dict = {}
+    for product_id, price in rows:
+        quantity = random.randint(1, 10)  # You can adjust the quantity range as needed.
+        product_dict[product_id] = (quantity, price)
+    
+    return product_dict
+
+
 # Function to populate Orders and Shipments, and record transactions
 def populate_orders_and_shipments(retail_conn, logistics_conn, accounts_conn, customer_ids, warehouse_ids, settings_dict):
     retail_cursor = retail_conn.cursor()
     logistics_cursor = logistics_conn.cursor()
     accounts_cursor = accounts_conn.cursor()
     
-    # Note: Autocommit is now set in main, so we remove it from here.
-    
     for i in range(settings_dict.get("batch_size")):
         customer_id = random.choice(customer_ids)
         order_date = fake.date_time_this_year()
-        total_amount = round(random.uniform(20, 1000), 2)
+        total_orders = get_order_info(retail_conn)
+        total_amount = sum(quantity * float(price) for quantity, price in total_orders.values())
         
         try:
             # Insert into Orders and retrieve generated order_id
@@ -146,7 +188,21 @@ def populate_orders_and_shipments(retail_conn, logistics_conn, accounts_conn, cu
                 print("ERROR: Failed to retrieve order_id!")
                 continue
             order_id = order_id[0]          
-        
+
+            for product_id, (quantity, price) in total_orders.items():
+                # Calculate the subtotal for this product
+                subtotal = quantity * float(price)
+                
+                # Insert the order item into the Order_Items table
+                retail_cursor.execute(
+                    """
+                    INSERT INTO Order_Items (order_id, product_id, quantity, subtotal)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (order_id, product_id, quantity, subtotal)
+                )
+
+
             warehouse_id = random.choice(warehouse_ids)
             city_id = random.randint(1, 10)  # Assuming 10 predefined cities
             shipment_date = fake.date_time_this_year()
@@ -203,10 +259,12 @@ if __name__ == "__main__":
             populate_payment_methods(accounts_conn)
             warehouse_ids = populate_warehouses(logistics_conn)
             customer_ids = populate_customers(retail_conn)
+            product_ids = populate_products(retail_conn)
         else:
             # If not the first load, fetch existing IDs.
             warehouse_ids = get_warehouses(logistics_conn)
             customer_ids = get_customers(retail_conn)
+            product_ids = get_products(retail_conn)
         
         while settings_dict.get("continous_loading") == 1:            
             populate_orders_and_shipments(retail_conn, logistics_conn, accounts_conn, customer_ids, warehouse_ids, settings_dict)
